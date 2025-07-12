@@ -65,12 +65,13 @@ describe('GitHub Actions Workflow Integration', () => {
     const workflow = YAML.parse(content);
 
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
-      if (!job['timeout-minutes']) {
+      const jobConfig = job as any;
+      if (!jobConfig['timeout-minutes']) {
         console.log(`Job "${jobName}" missing timeout-minutes:`, job);
       }
-      expect(job['timeout-minutes']).toBeDefined();
-      expect(typeof job['timeout-minutes']).toBe('number');
-      expect(job['timeout-minutes']).toBeGreaterThan(0);
+      expect(jobConfig['timeout-minutes']).toBeDefined();
+      expect(typeof jobConfig['timeout-minutes']).toBe('number');
+      expect(jobConfig['timeout-minutes']).toBeGreaterThan(0);
     }
   });
 
@@ -87,8 +88,9 @@ describe('GitHub Actions Workflow Integration', () => {
 
       if (workflow.jobs) {
         for (const job of Object.values(workflow.jobs)) {
-          if (job.steps) {
-            for (const step of job.steps) {
+          const jobConfig = job as any;
+          if (jobConfig.steps) {
+            for (const step of jobConfig.steps) {
               if (step.uses && step.uses.startsWith('actions/')) {
                 const action = step.uses.split('@')[0];
                 const version = step.uses.split('@')[1];
@@ -117,8 +119,9 @@ describe('GitHub Actions Workflow Integration', () => {
     let hasDownload = false;
 
     for (const job of Object.values(workflow.jobs)) {
-      if (job.steps) {
-        for (const step of job.steps) {
+      const jobConfig = job as any;
+      if (jobConfig.steps) {
+        for (const step of jobConfig.steps) {
           if (step.uses === 'actions/upload-artifact@v4') {
             hasUpload = true;
             expect(step.with.name).toBeDefined();
