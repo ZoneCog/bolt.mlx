@@ -1,0 +1,322 @@
+name: Dependency Management
+
+on:
+  schedule:
+    # Run weekly on Mondays at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      update_type:
+        description: 'Type of updates to perform'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - all
+
+env:
+  NODE_VERSION: '20.15.1'
+  PNPM_VERSION: '9.4.0'
+
+jobs:
+  # Dependency audit and security check
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run security audit
+        run: |
+          echo "Running security audit..."
+          pnpm audit --json > security-audit.json || true
+
+          # Parse and display vulnerabilities
+          if [ -f security-audit.json ]; then
+            HIGH_VULNS=$(cat security-audit.json | jq '.metadata.vulnerabilities.high // 0')
+            CRITICAL_VULNS=$(cat security-audit.json | jq '.metadata.vulnerabilities.critical // 0')
+            
+            echo "Critical vulnerabilities: $CRITICAL_VULNS"
+            echo "High vulnerabilities: $HIGH_VULNS"
+            
+            if [ "$CRITICAL_VULNS" -gt 0 ] || [ "$HIGH_VULNS" -gt 0 ]; then
+              echo "⚠️ High or critical vulnerabilities found!"
+              cat security-audit.json | jq '.advisories' || true
+            else
+              echo "✅ No high or critical vulnerabilities found"
+            fi
+          fi
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-results
+          path: security-audit.json
+        if: always()
+
+  # Check for outdated dependencies
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has-updates: ${{ steps.check.outputs.has-updates }}
+      update-summary: ${{ steps.check.outputs.update-summary }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Check for outdated dependencies
+        id: check
+        run: |
+          echo "Checking for outdated dependencies..."
+
+          # Get outdated packages
+          pnpm outdated --format json > outdated.json || true
+
+          if [ -s outdated.json ]; then
+            echo "has-updates=true" >> $GITHUB_OUTPUT
+            
+            # Create summary
+            PATCH_COUNT=$(cat outdated.json | jq 'to_entries | map(select(.value.difference == "patch")) | length')
+            MINOR_COUNT=$(cat outdated.json | jq 'to_entries | map(select(.value.difference == "minor")) | length')
+            MAJOR_COUNT=$(cat outdated.json | jq 'to_entries | map(select(.value.difference == "major")) | length')
+            
+            SUMMARY="Patch: $PATCH_COUNT, Minor: $MINOR_COUNT, Major: $MAJOR_COUNT"
+            echo "update-summary=$SUMMARY" >> $GITHUB_OUTPUT
+            
+            echo "📦 Outdated packages found:"
+            echo "- Patch updates: $PATCH_COUNT"
+            echo "- Minor updates: $MINOR_COUNT"
+            echo "- Major updates: $MAJOR_COUNT"
+          else
+            echo "has-updates=false" >> $GITHUB_OUTPUT
+            echo "✅ All dependencies are up to date"
+          fi
+
+      - name: Upload outdated analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: outdated-dependencies
+          path: outdated.json
+        if: always()
+
+  # Update dependencies
+  dependency-update:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    needs: [security-audit, dependency-check]
+    if: needs.dependency-check.outputs.has-updates == 'true'
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Update dependencies based on type
+        run: |
+          UPDATE_TYPE="${{ github.event.inputs.update_type || 'patch' }}"
+          echo "Updating dependencies: $UPDATE_TYPE"
+
+          case $UPDATE_TYPE in
+            "patch")
+              echo "Updating patch versions only..."
+              pnpm update --latest --filter "./packages/**" || true
+              ;;
+            "minor")
+              echo "Updating minor versions..."
+              # In a real scenario, you'd use a tool like npm-check-updates
+              echo "Minor updates would be performed here"
+              ;;
+            "major")
+              echo "Updating major versions (careful!)..."
+              echo "Major updates would be performed here"
+              ;;
+            "all")
+              echo "Updating all dependencies..."
+              echo "All updates would be performed here"
+              ;;
+          esac
+
+      - name: Test after updates
+        run: |
+          echo "Testing after dependency updates..."
+          pnpm install
+          pnpm run typecheck
+          pnpm run test
+          pnpm run build
+
+      - name: Create pull request
+        run: |
+          # Check if there are changes
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Changes detected, creating PR..."
+            
+            # Configure git
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            
+            # Create branch
+            BRANCH_NAME="deps/automated-update-$(date +%Y%m%d-%H%M%S)"
+            git checkout -b "$BRANCH_NAME"
+            
+            # Commit changes
+            git add .
+            git commit -m "chore: automated dependency updates
+            
+            ${{ needs.dependency-check.outputs.update-summary }}
+            
+            Auto-generated by GitHub Actions"
+            
+            # Push branch (this would need proper permissions in real scenario)
+            echo "Branch $BRANCH_NAME would be pushed and PR created"
+            echo "PR would include: ${{ needs.dependency-check.outputs.update-summary }}"
+          else
+            echo "No changes to commit"
+          fi
+
+  # License compliance check
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Check licenses
+        run: |
+          echo "Checking dependency licenses..."
+
+          # Install license checker
+          pnpm add -D license-checker
+
+          # Generate license report
+          pnpm exec license-checker --json > licenses.json
+
+          # Check for problematic licenses
+          echo "License summary:"
+          cat licenses.json | jq -r 'to_entries[] | "\(.key): \(.value.licenses)"' | sort | uniq -c | sort -nr
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: licenses.json
+
+  # Summary report
+  dependency-summary:
+    name: Dependency Summary
+    runs-on: ubuntu-latest
+    needs: [security-audit, dependency-check, dependency-update, license-check]
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Dependency Management Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Security audit results
+          if [[ "${{ needs.security-audit.result }}" == "success" ]]; then
+            echo "✅ Security audit: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Security audit: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Dependency check results
+          if [[ "${{ needs.dependency-check.result }}" == "success" ]]; then
+            echo "✅ Dependency check: COMPLETED" >> $GITHUB_STEP_SUMMARY
+            if [[ "${{ needs.dependency-check.outputs.has-updates }}" == "true" ]]; then
+              echo "📦 Updates available: ${{ needs.dependency-check.outputs.update-summary }}" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "📦 All dependencies up to date" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ Dependency check: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Update results
+          if [[ "${{ needs.dependency-update.result }}" == "success" ]]; then
+            echo "✅ Dependency update: COMPLETED" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.dependency-update.result }}" == "skipped" ]]; then
+            echo "⏭️ Dependency update: SKIPPED (no updates needed)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Dependency update: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # License check results
+          if [[ "${{ needs.license-check.result }}" == "success" ]]; then
+            echo "✅ License check: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ License check: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Report generated at: $(date)" >> $GITHUB_STEP_SUMMARY

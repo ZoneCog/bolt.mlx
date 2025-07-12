@@ -1,0 +1,86 @@
+name: Update Status Badges
+
+on:
+  workflow_run:
+    workflows: ["CI/CD", "Comprehensive Testing", "Deploy", "Documentation"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  update-badges:
+    name: Update Status Badges
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate badge URLs
+        id: badges
+        run: |
+          REPO="${{ github.repository }}"
+          BRANCH="${{ github.ref_name }}"
+          
+          echo "ci_badge=https://github.com/$REPO/workflows/CI%2FCD/badge.svg?branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "tests_badge=https://github.com/$REPO/workflows/Comprehensive%20Testing/badge.svg?branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "deploy_badge=https://github.com/$REPO/workflows/Deploy/badge.svg?branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "docs_badge=https://github.com/$REPO/workflows/Documentation/badge.svg?branch=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Check if README needs badge updates
+        run: |
+          echo "Checking if README needs status badge updates..."
+          
+          # Check if badges section exists
+          if ! grep -q "## Status" README.md; then
+            echo "Adding status badges section to README.md"
+            
+            # Create badges section
+            cat > badges_section.md << EOF
+          
+          ## Status
+          
+          [![CI/CD](${{ steps.badges.outputs.ci_badge }})](https://github.com/${{ github.repository }}/actions/workflows/ci.yaml)
+          [![Tests](${{ steps.badges.outputs.tests_badge }})](https://github.com/${{ github.repository }}/actions/workflows/comprehensive-tests.yaml)
+          [![Deploy](${{ steps.badges.outputs.deploy_badge }})](https://github.com/${{ github.repository }}/actions/workflows/deploy.yaml)
+          [![Documentation](${{ steps.badges.outputs.docs_badge }})](https://github.com/${{ github.repository }}/actions/workflows/documentation.yaml)
+          
+          EOF
+            
+            # Insert after the title
+            sed -i '4r badges_section.md' README.md
+            rm badges_section.md
+            
+            echo "Status badges added to README.md"
+          else
+            echo "Status badges already exist in README.md"
+          fi
+
+      - name: Commit badge updates
+        run: |
+          if [ -n "$(git status --porcelain README.md)" ]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add README.md
+            git commit -m "docs: update status badges [skip ci]"
+            echo "README badges would be pushed (requires write permissions)"
+          else
+            echo "No badge updates needed"
+          fi
+
+      - name: Create workflow summary
+        run: |
+          echo "# Workflow Status Update" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Current Badge Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- CI/CD: ![CI/CD](${{ steps.badges.outputs.ci_badge }})" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests: ![Tests](${{ steps.badges.outputs.tests_badge }})" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy: ![Deploy](${{ steps.badges.outputs.deploy_badge }})" >> $GITHUB_STEP_SUMMARY
+          echo "- Documentation: ![Documentation](${{ steps.badges.outputs.docs_badge }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Last updated: $(date)" >> $GITHUB_STEP_SUMMARY

@@ -96,6 +96,7 @@
     "vite-tsconfig-paths": "^4.3.2",
     "vitest": "^2.0.1",
     "wrangler": "^3.63.2",
+    "yaml": "^2.8.0",
     "zod": "^3.23.8"
   },
   "resolutions": {

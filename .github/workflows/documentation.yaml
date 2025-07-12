@@ -1,0 +1,401 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'docs/**'
+      - '*.md'
+      - 'app/**/*.ts'
+      - 'app/**/*.tsx'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '*.md'
+      - 'app/**/*.ts'
+      - 'app/**/*.tsx'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20.15.1'
+  PNPM_VERSION: '9.4.0'
+
+jobs:
+  # Generate TypeScript documentation
+  api-docs:
+    name: Generate API Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install TypeDoc
+        run: pnpm add -D typedoc
+
+      - name: Generate TypeScript documentation
+        run: |
+          echo "Generating TypeScript API documentation..."
+
+          # Create typedoc.json config
+          cat > typedoc.json << EOF
+          {
+            "entryPoints": ["./app"],
+            "out": "./docs/api",
+            "exclude": ["**/*.test.ts", "**/*.spec.ts", "**/node_modules/**"],
+            "theme": "default",
+            "readme": "./README.md",
+            "excludePrivate": true,
+            "excludeProtected": true,
+            "excludeInternal": true,
+            "categorizeByGroup": true,
+            "defaultCategory": "Other",
+            "categoryOrder": [
+              "Components",
+              "Utilities",
+              "Types",
+              "Other"
+            ]
+          }
+          EOF
+
+          # Generate documentation
+          pnpm exec typedoc --options typedoc.json
+
+          echo "✅ API documentation generated"
+
+      - name: Generate component documentation
+        run: |
+          echo "Generating component documentation..."
+
+          # Create a simple component index
+          mkdir -p docs/components
+
+          cat > docs/components/README.md << EOF
+          # Component Documentation
+
+          This directory contains documentation for React components used in Bolt.new.
+
+          ## Available Components
+
+          EOF
+
+          # Find React components and add to index
+          find app -name "*.tsx" -type f | grep -E "(component|Component)" | head -10 | while read file; do
+            component=$(basename "$file" .tsx)
+            echo "- [$component](./${component}.md)" >> docs/components/README.md
+          done
+
+          echo "✅ Component documentation generated"
+
+      - name: Upload API docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-documentation
+          path: docs/
+          retention-days: 30
+
+  # Check documentation quality
+  docs-quality:
+    name: Documentation Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check README quality
+        run: |
+          echo "Checking README.md quality..."
+
+          # Basic README checks
+          if [ ! -f README.md ]; then
+            echo "❌ README.md not found"
+            exit 1
+          fi
+
+          # Check minimum length
+          if [ $(wc -l < README.md) -lt 10 ]; then
+            echo "⚠️ README.md seems too short"
+          fi
+
+          # Check for required sections
+          if grep -q "# " README.md; then
+            echo "✅ README has proper headings"
+          else
+            echo "⚠️ README should have proper markdown headings"
+          fi
+
+          if grep -q "installation\|setup\|getting started" README.md -i; then
+            echo "✅ README has setup instructions"
+          else
+            echo "⚠️ README should include setup instructions"
+          fi
+
+      - name: Check for TODO/FIXME comments
+        run: |
+          echo "Checking for TODO/FIXME comments in documentation..."
+
+          TODO_COUNT=$(find . -name "*.md" -exec grep -l "TODO\|FIXME" {} \; | wc -l)
+
+          if [ $TODO_COUNT -gt 0 ]; then
+            echo "⚠️ Found $TODO_COUNT documentation files with TODO/FIXME comments"
+            find . -name "*.md" -exec grep -Hn "TODO\|FIXME" {} \;
+          else
+            echo "✅ No TODO/FIXME comments found in documentation"
+          fi
+
+      - name: Validate markdown links
+        run: |
+          echo "Validating markdown links..."
+
+          # Install markdown link checker
+          npm install -g markdown-link-check
+
+          # Check all markdown files
+          find . -name "*.md" -not -path "./node_modules/*" -not -path "./.git/*" | while read file; do
+            echo "Checking links in $file..."
+            markdown-link-check "$file" --config .github/workflows/link-check-config.json || true
+          done
+
+      - name: Create link check config
+        run: |
+          mkdir -p .github/workflows
+          cat > .github/workflows/link-check-config.json << EOF
+          {
+            "ignorePatterns": [
+              {
+                "pattern": "^http://localhost"
+              },
+              {
+                "pattern": "^https://localhost"
+              },
+              {
+                "pattern": "^http://127.0.0.1"
+              }
+            ],
+            "timeout": "5s",
+            "retryOn429": true,
+            "retryCount": 3,
+            "fallbackRetryDelay": "30s",
+            "aliveStatusCodes": [200, 206]
+          }
+          EOF
+
+  # Generate changelog
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for changelog generation
+
+      - name: Generate changelog
+        run: |
+          echo "Generating changelog..."
+
+          # Create changelog header
+          cat > CHANGELOG.md << EOF
+          # Changelog
+
+          All notable changes to this project will be documented in this file.
+
+          The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+          and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+          ## [Unreleased]
+
+          EOF
+
+          # Get recent commits and categorize them
+          echo "### Added" >> CHANGELOG.md
+          git log --oneline --since="1 month ago" --grep="feat\|add" --format="- %s" >> CHANGELOG.md || true
+
+          echo "" >> CHANGELOG.md
+          echo "### Changed" >> CHANGELOG.md
+          git log --oneline --since="1 month ago" --grep="change\|update" --format="- %s" >> CHANGELOG.md || true
+
+          echo "" >> CHANGELOG.md
+          echo "### Fixed" >> CHANGELOG.md
+          git log --oneline --since="1 month ago" --grep="fix\|bug" --format="- %s" >> CHANGELOG.md || true
+
+          echo "✅ Changelog generated"
+
+      - name: Commit changelog
+        run: |
+          if [ -n "$(git status --porcelain CHANGELOG.md)" ]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add CHANGELOG.md
+            git commit -m "docs: update changelog [skip ci]"
+            echo "Changelog would be pushed (requires write permissions)"
+          else
+            echo "No changelog changes to commit"
+          fi
+
+  # Deploy documentation to GitHub Pages
+  deploy-docs:
+    name: Deploy Documentation
+    runs-on: ubuntu-latest
+    needs: [api-docs, docs-quality]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download API documentation
+        uses: actions/download-artifact@v4
+        with:
+          name: api-documentation
+          path: docs/
+
+      - name: Setup documentation site
+        run: |
+          echo "Setting up documentation site..."
+
+          # Create a simple index.html for GitHub Pages
+          mkdir -p docs-site
+
+          cat > docs-site/index.html << EOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Bolt.new Documentation</title>
+              <style>
+                  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 40px; }
+                  .container { max-width: 800px; margin: 0 auto; }
+                  h1 { color: #2563eb; }
+                  .section { margin: 20px 0; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; }
+                  a { color: #2563eb; text-decoration: none; }
+                  a:hover { text-decoration: underline; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🚀 Bolt.new Documentation</h1>
+                  
+                  <div class="section">
+                      <h2>📚 API Documentation</h2>
+                      <p>TypeScript API documentation generated from source code.</p>
+                      <a href="./api/index.html">View API Docs →</a>
+                  </div>
+                  
+                  <div class="section">
+                      <h2>🧩 Component Documentation</h2>
+                      <p>Documentation for React components.</p>
+                      <a href="./components/README.html">View Components →</a>
+                  </div>
+                  
+                  <div class="section">
+                      <h2>📖 README</h2>
+                      <p>Project overview and getting started guide.</p>
+                      <a href="../README.md">View README →</a>
+                  </div>
+                  
+                  <div class="section">
+                      <h2>📝 Changelog</h2>
+                      <p>Recent changes and version history.</p>
+                      <a href="../CHANGELOG.md">View Changelog →</a>
+                  </div>
+              </div>
+          </body>
+          </html>
+          EOF
+
+          # Copy documentation files
+          cp -r docs/* docs-site/ 2>/dev/null || true
+
+          echo "✅ Documentation site prepared"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Documentation summary
+  docs-summary:
+    name: Documentation Summary
+    runs-on: ubuntu-latest
+    needs: [api-docs, docs-quality, changelog, deploy-docs]
+    if: always()
+
+    steps:
+      - name: Generate documentation summary
+        run: |
+          echo "# Documentation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ needs.api-docs.result }}" == "success" ]]; then
+            echo "✅ API documentation: GENERATED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ API documentation: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.docs-quality.result }}" == "success" ]]; then
+            echo "✅ Documentation quality: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Documentation quality: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.changelog.result }}" == "success" ]]; then
+            echo "✅ Changelog: UPDATED" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.changelog.result }}" == "skipped" ]]; then
+            echo "⏭️ Changelog: SKIPPED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Changelog: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.deploy-docs.result }}" == "success" ]]; then
+            echo "✅ Documentation deployment: SUCCESSFUL" >> $GITHUB_STEP_SUMMARY
+            echo "📖 Documentation URL: ${{ needs.deploy-docs.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-docs.result }}" == "skipped" ]]; then
+            echo "⏭️ Documentation deployment: SKIPPED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Documentation deployment: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Documentation generated at: $(date)" >> $GITHUB_STEP_SUMMARY
